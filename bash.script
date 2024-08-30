@@ -1,0 +1,122 @@
+#!/bin/bash
+
+# Path to your SonarQube Scanner CLI executable
+SONAR_SCANNER_CLI_PATH="C:/Rakesh/sonar/sonar-scanner-5.0.1.3006-windows/bin/sonar-scanner.bat"
+
+# Path to your project directory
+PROJECT_DIR="D:/test"
+
+# Path to the directory to store scanner report
+REPORT_DIR="${PROJECT_DIR}/.scannerwork"
+
+# Path to your SonarQube server
+SONAR_SERVER="http://localhost:9000"
+
+# SonarQube project key
+PROJECT_KEY="sonar"
+
+# SonarQube authentication token
+SONAR_TOKEN="squ_cabef1187f7fb4379787e86ec9152566ee43ae48"
+
+# Ensure the script is executed within a Git repository
+if [ ! -d "$PROJECT_DIR/.git" ]; then
+  echo "Error: This script must be executed within a Git repository."
+  exit 1
+fi
+
+# Execute SonarQube scan for files staged for the next commit
+STAGED_FILES=$(git diff --cached --name-only)
+echo "Staged files for the next commit:"
+echo "$STAGED_FILES"
+for FILE in $STAGED_FILES; do
+    FULL_PATH="${PROJECT_DIR}/${FILE}"
+    if [ ! -f "$FULL_PATH" ]; then
+        echo "File not found: $FULL_PATH"
+        continue
+    fi
+    EXIT_CODE="NULL"
+    # Check if the file has been deleted
+    if [ ! -e "$FULL_PATH" ]; then
+        echo "File has been deleted: $FULL_PATH"
+        continue
+    fi
+
+    # Check if the file is a Python file
+    if [[ "$FILE" == *.py ]]; then
+        # Check for syntax errors before running the SonarQube scan
+        if ! python -m py_compile "$FULL_PATH"; then
+            echo "Syntax error found in ${FILE}. Please fix the syntax error before committing."
+            exit 1
+        fi
+    fi
+
+    echo "Scanning file: $FILE"
+    # Run SonarScanner and capture the output
+    SCAN_OUTPUT=$("${SONAR_SCANNER_CLI_PATH}" \
+    -Dsonar.projectKey="${PROJECT_KEY}" \
+    -Dsonar.sources="${FULL_PATH}" \
+    -Dsonar.host.url="${SONAR_SERVER}" \
+    -Dsonar.login="${SONAR_TOKEN}" \
+    -Dsonar.scanner.metadataFilePath="${REPORT_DIR}/sonar-scanner-report-task.txt" \
+    -Dsonar.qualitygate.wait=true 2>&1) # Redirect stderr to stdout
+
+    # Extract stderr from SCAN_OUTPUT
+    ERROR_MESSAGE=$(echo "$SCAN_OUTPUT" | grep '^ERROR:')
+    
+    # Check SonarQube scan result
+    if [ $? -ne 0 ]; then
+        echo "SonarQube scan success for ${FILE}.  message:"
+        echo "$ERROR_MESSAGE"
+        EXIT_CODE=0
+		echo "exit code  before url:${EXIT_CODE}"
+    fi
+
+# Check if Quality Gate is passed for the project
+
+# Retrieve quality gate status using curl and jq
+API_URL="${SONAR_SERVER}/api/qualitygates/project_status?projectKey=${PROJECT_KEY}"
+echo "API URL: ${API_URL}"
+QUALITY_GATE_RESPONSE=$(curl -s -u "${SONAR_TOKEN}": "${API_URL}")
+echo "Response from SonarQube server:"
+echo "${QUALITY_GATE_RESPONSE}"
+
+# Check if the response contains errors
+if echo "${QUALITY_GATE_RESPONSE}" | jq -e '.' &> /dev/null; then
+    # Response is in JSON format
+    QUALITY_GATE_STATUS=$(echo "${QUALITY_GATE_RESPONSE}" | jq -r '.projectStatus.status')
+    echo "${QUALITY_GATE_STATUS} this is the status of quality gate"
+    
+    # Check if the quality gate status is not "OK"
+    if [ "$QUALITY_GATE_STATUS" != "OK" ]; then
+        echo "Quality Gate check failed. Please fix the issues before committing."
+        exit 1
+    fi
+elif echo "${QUALITY_GATE_RESPONSE}" | grep '<html>' &> /dev/null; then
+    # Response is in HTML format
+    echo "Error response from SonarQube server: HTML format."
+    echo "Please check the quality gate status manually."
+else
+    # Unknown response format
+    echo "Unknown response format from SonarQube server."
+    echo "exit code  after url:${EXIT_CODE}"
+    # Check if EXIT_CODE is null, if yes, set it to 1
+    if [ "$EXIT_CODE" != "0" ]; then
+        EXIT_CODE=1
+    fi
+fi
+echo "${EXIT_CODE}"
+# Check the exit code
+if [ "$EXIT_CODE" == "1" ]; then
+    echo "Exit code is 1. Quality gate is failed ."
+    exit 1
+fi
+
+done
+echo "Quality Gate is OK. Proceed with committing."
+
+exit 0
+
+
+
+
+
